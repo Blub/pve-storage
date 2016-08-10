@@ -441,7 +441,7 @@ sub path {
 }
 
 sub create_base {
-    my ($class, $storeid, $scfg, $volname) = @_;
+    my ($class, $storeid, $scfg, $volname, $create_callback) = @_;
 
     # this only works for file based storage types
     die "storage definition has no path\n" if !$scfg->{path};
@@ -471,21 +471,24 @@ sub create_base {
 
     die "file '$newpath' already exists\n" if -f $newpath;
 
-    rename($path, $newpath) ||
-	die "rename '$path' to '$newpath' failed - $!\n";
-
     # We try to protect base volume
+    if ($create_callback) {
+	&$create_callback($path, $newpath, $format);
+    } else {
+	rename($path, $newpath) ||
+	    die "rename '$path' to '$newpath' failed - $!\n";
 
-    chmod(0444, $newpath); # nobody should write anything
+	chmod(0444, $newpath); # nobody should write anything
 
-    # also try to set immutable flag
-    eval { run_command(['/usr/bin/chattr', '+i', $newpath]); };
-    warn $@ if $@;
+	# also try to set immutable flag
+	eval { run_command(['/usr/bin/chattr', '+i', $newpath]); };
+	warn $@ if $@;
+    }
 
     return $newvolname;
 }
 
-my $find_free_diskname = sub {
+our $find_free_diskname = sub {
     my ($imgdir, $vmid, $fmt) = @_;
 
     my $disk_ids = {};
