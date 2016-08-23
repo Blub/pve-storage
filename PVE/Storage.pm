@@ -531,8 +531,62 @@ sub storage_migrate {
 
     local $ENV{RSYNC_RSH} = $ssh;
 
-    # only implemented for file system based storage
-    if ($scfg->{path}) {
+    my ($vmid, $format) = (parse_volname($cfg, $volid))[2,6];
+
+    if ($scfg->{type} eq 'btrfs' && $format =~ /^(?:subvol|raw)$/) {
+	# XXX: Do we want to support a btrfs-to-directory storage transition?
+	# We'd have to move the .raw files out of the subvolume subdirectory...
+	if ($tcfg->{type} ne 'btrfs') {
+	    die "$errstr - target type $tcfg->{type} is not valid\n";
+	}
+
+	my $src_plugin = PVE::Storage::Plugin->lookup($scfg->{type});
+	my $dst_plugin = PVE::Storage::Plugin->lookup($tcfg->{type});
+
+	my $src_path = $src_plugin->path($scfg, $volname, $storeid);
+	$src_path = PVE::Storage::BTRFSPlugin::raw_file_to_subvol($src_path) if $src_path =~ /\.raw$/;
+
+	my $dst_path = $dst_plugin->path($tcfg, $target_volname, $target_storeid);
+	$dst_path = PVE::Storage::BTRFSPlugin::raw_file_to_subvol($dst_path) if $dst_path =~ /\.raw$/;
+
+	my $snap_path = "${src_path}.migration";
+	my $snap_dst_path = "${dst_path}.migration";
+	# btrfs-send needs a read-only snapshot
+	my $make_snapshot = ['btrfs', 'subvolume', 'snapshot', '-r', '--', $src_path, $snap_path];
+	my $del_snapshot  = ['btrfs', 'subvolume', 'delete', $snap_path];
+
+	my @ssh = ('ssh', "root\@$target_host", '--');
+
+	my $dst_dir = $dst_plugin->get_subdir($tcfg, 'images') . "/$vmid";
+	my $remote_mkdir = [@ssh, 'mkdir', '-p', '--', $dst_dir];
+
+	my $send = ['btrfs', 'send', '-e', $snap_path];
+	my $recv = [@ssh, 'btrfs', 'receive', '-e', $dst_dir];
+	my $make_rw = [@ssh, 'btrfs', 'property', 'set', $snap_dst_path, 'ro', 'false'];
+	my $commit = [@ssh, 'mv', '-T', '--', $snap_dst_path, $dst_path];
+
+	my $del_target = [@ssh, 'btrfs', 'subvolume', 'delete', $dst_path];
+
+	run_command($remote_mkdir);
+	run_command($make_snapshot);
+	eval {
+	    run_command([$send, $recv]);
+	    eval {
+		run_command($make_rw);
+		run_command($commit);
+	    };
+	    if (my $err = $@) {
+		eval { run_command($del_target) };
+		warn $@ if $@;
+		die $err;
+	    }
+	};
+	my $err = $@;
+	eval { run_command($del_snapshot) };
+	warn $@ if $@;
+	die $err if $err;
+    } elsif ($scfg->{path}) {
+	# generic directory based storage approach
 	if ($tcfg->{path}) {
 
 	    my $src_plugin = PVE::Storage::Plugin->lookup($scfg->{type});
@@ -631,7 +685,6 @@ sub storage_migrate {
 	if (($scfg->{type} eq $tcfg->{type}) &&
 	    ($tcfg->{type} eq 'lvmthin' || $tcfg->{type} eq 'lvm')) {
 
-	    my (undef, $volname, $vmid) = parse_volname($cfg, $volid);
 	    my $size = volume_size_info($cfg, $volid, 5);
 	    my $src = path($cfg, $volid);
 	    my $dst = path($cfg, $target_volid);
