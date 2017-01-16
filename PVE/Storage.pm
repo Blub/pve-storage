@@ -619,7 +619,7 @@ sub storage_migrate {
 		my $cmd;
 		if ($format eq 'subvol') {
 		    $cmd = ['/usr/bin/rsync', '--progress', '-X', '-A', '--numeric-ids',
-			    '-aH', '--delete', '--no-whole-file', '--inplace',
+			    '-aH', '--delete', '--no-whole-file', '--sparse',
 			    '--one-file-system', "$src/", "[root\@${target_host}]:$dst"];
 		} else {
 		    $cmd = ['/usr/bin/rsync', '--progress', '--sparse', '--whole-file',
